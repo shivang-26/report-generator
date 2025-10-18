@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os
@@ -9,6 +9,11 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
+from motor.motor_asyncio import AsyncIOMotorCollection
+
+# Import database and models
+from database import connect_to_mongo, close_mongo_connection, get_reports_collection
+from models import Report, ReportCreate, UserCreate, UserInDB, PyObjectId
 
 # Load environment variables
 load_dotenv()
@@ -16,9 +21,9 @@ load_dotenv()
 # Initialize Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    print("Warning: GEMINI_API_KEY not found in .env file")
+    print("Warning: GEMINI_API_KEY not found in environment variables")
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 app = FastAPI(
     title="Project Report Generator API",
@@ -35,20 +40,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Models
-class ProjectData(BaseModel):
-    title: str
-    authors: List[str]
-    abstract: Optional[str] = None
-    introduction: Optional[str] = None
-    methodology: Optional[str] = None
-    results: Optional[str] = None
-    conclusion: Optional[str] = None
-    references: Optional[List[Dict[str, Any]]] = None
-    template: str = "ieee"  # or "springer"
+# Database connection events
+@app.on_event("startup")
+async def startup_db_client():
+    await connect_to_mongo()
 
-# Create output directory if it doesn't exist
-os.makedirs("output", exist_ok=True)
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    await close_mongo_connection()
+
+# Helper function to get reports collection
+async def get_reports() -> AsyncIOMotorCollection:
+    return get_reports_collection()
 
 async def generate_ai_text(prompt: str) -> str:
     """Generate text using Gemini API"""
@@ -59,48 +62,41 @@ async def generate_ai_text(prompt: str) -> str:
         print(f"Error generating AI text: {e}")
         return f"Error generating content: {str(e)}"
 
-@app.get("/")
-async def read_root():
-    return {"message": "Welcome to Project Report Generator API"}
+# Report endpoints
+@app.post("/api/reports/", response_model=Report)
+async def create_report(report: ReportCreate):
+    """Create a new report"""
+    reports_collection = await get_reports()
+    report_dict = report.dict()
+    report_dict["created_at"] = datetime.utcnow()
+    report_dict["updated_at"] = datetime.utcnow()
+    
+    result = await reports_collection.insert_one(report_dict)
+    created_report = await reports_collection.find_one({"_id": result.inserted_id})
+    return created_report
 
-@app.post("/generate-report")
-async def generate_report(project_data: ProjectData):
-    """Generate a report in DOCX and PDF formats"""
+@app.get("/api/reports/", response_model=List[Report])
+async def list_reports(limit: int = 10, skip: int = 0):
+    """List all reports with pagination"""
+    reports_collection = await get_reports()
+    reports = await reports_collection.find().skip(skip).limit(limit).to_list(length=limit)
+    return reports
+
+@app.get("/api/reports/{report_id}", response_model=Report)
+async def get_report(report_id: str):
+    """Get a specific report by ID"""
+    reports_collection = await get_reports()
     try:
-        # Generate a unique filename
-        file_id = str(uuid.uuid4())
-        docx_path = f"output/{file_id}.docx"
-        pdf_path = f"output/{file_id}.pdf"
-        
-        # TODO: Generate DOCX using project_data
-        # TODO: Convert DOCX to PDF
-        
-        return {
-            "status": "success",
-            "message": "Report generated successfully",
-            "data": {
-                "docx_url": f"/download/{file_id}.docx",
-                "pdf_url": f"/download/{file_id}.pdf"
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    """Download generated files"""
-    file_path = f"output/{filename}"
-    if os.path.exists(file_path):
-        return FileResponse(
-            file_path,
-            media_type="application/octet-stream",
-            filename=filename
-        )
-    raise HTTPException(status_code=404, detail="File not found")
+        report = await reports_collection.find_one({"_id": PyObjectId(report_id)})
+        if report is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        return report
+    except:
+        raise HTTPException(status_code=400, detail="Invalid report ID")
 
 # AI Endpoints
-@app.post("/ai/abstract")
-async def generate_abstract(text: str = Query(..., description="The content to generate an abstract for")):
+@app.post("/api/ai/abstract")
+async def generate_abstract(text: str):
     """Generate an abstract using AI"""
     prompt = f"""Generate a professional abstract (150-250 words) for a research paper based on the following content.
     Include the purpose, methodology, findings, and significance of the research.
@@ -113,8 +109,8 @@ async def generate_abstract(text: str = Query(..., description="The content to g
     abstract = await generate_ai_text(prompt)
     return {"abstract": abstract}
 
-@app.post("/ai/conclusion")
-async def generate_conclusion(text: str = Query(..., description="The content to generate a conclusion for")):
+@app.post("/api/ai/conclusion")
+async def generate_conclusion(text: str):
     """Generate a conclusion using AI"""
     prompt = f"""Write a comprehensive conclusion for a research paper based on the following content.
     The conclusion should summarize the key findings, discuss their implications, and suggest future research directions.
@@ -127,8 +123,8 @@ async def generate_conclusion(text: str = Query(..., description="The content to
     conclusion = await generate_ai_text(prompt)
     return {"conclusion": conclusion}
 
-@app.post("/ai/reword")
-async def reword_text(text: str = Query(..., description="The text to improve")):
+@app.post("/api/ai/reword")
+async def reword_text(text: str):
     """Improve grammar and flow of text"""
     prompt = f"""Improve the grammar, clarity, and flow of the following academic text while preserving its original meaning.
     Make it more professional and academic. Do not change the technical terms or specific information.
@@ -141,8 +137,8 @@ async def reword_text(text: str = Query(..., description="The text to improve"))
     rewritten = await generate_ai_text(prompt)
     return {"rewritten_text": rewritten}
 
-@app.post("/ai/synopsis")
-async def generate_synopsis(text: str = Query(..., description="The content to summarize")):
+@app.post("/api/ai/synopsis")
+async def generate_synopsis(text: str):
     """Generate a 2-page summary"""
     prompt = f"""Create a concise 2-page summary (approximately 1000 words) of the following content.
     Include the main points, methodology, results, and conclusions.
@@ -154,6 +150,19 @@ async def generate_synopsis(text: str = Query(..., description="The content to s
     
     synopsis = await generate_ai_text(prompt)
     return {"synopsis": synopsis}
+
+# Health check endpoint
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "ok", "message": "Service is running"}
+
+# This is required for Vercel
+def handler(event, context):
+    return {
+        "statusCode": 200,
+        "body": "Hello from Vercel Python!"
+    }
 
 if __name__ == "__main__":
     import uvicorn
