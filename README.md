@@ -100,8 +100,8 @@ A FastAPI-based backend for generating professional project reports with AI assi
 | PLAGIARISM_API_KEY | Plagiarism checking API key | No | - |
 | PORT | Port to run the server on | No | 8000 |
 | ENVIRONMENT | Application environment | No | development |
-| UPLOAD_FOLDER | Directory to store uploaded files | No | ./uploads |
-| OUTPUT_FOLDER | Directory to store generated files | No | ./output |
+| UPLOAD_FOLDER | Directory to store uploaded files | No | /tmp/uploads |
+| TEMP_DIR | Directory for temporary files | No | System temp directory |
 
 ## Contributing
 
