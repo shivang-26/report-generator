@@ -1,18 +1,15 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic.functional_validators import PlainValidator
+from typing import List, Optional, Dict, Any, Annotated
 from datetime import datetime
 from bson import ObjectId
 
-class PyObjectId(ObjectId):
-    @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+def validate_objectid(v):
+    if not ObjectId.is_valid(v):
+        raise ValueError("Invalid ObjectId")
+    return str(v)
 
-    @classmethod
-    def validate(cls, v):
-        if not ObjectId.is_valid(v):
-            raise ValueError("Invalid ObjectId")
-        return str(v)
+PyObjectId = Annotated[str, PlainValidator(validate_objectid)]
 
 class ReportBase(BaseModel):
     title: str
@@ -32,12 +29,19 @@ class ReportCreate(ReportBase):
     pass
 
 class Report(ReportBase):
-    id: Optional[PyObjectId] = Field(alias='_id')
+    id: Optional[PyObjectId] = Field(alias='_id', default=None)
     
-    class Config:
-        json_encoders = {ObjectId: str}
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_schema_extra={
+            "example": {
+                "title": "Sample Report",
+                "authors": ["Author One", "Author Two"],
+                "template": "ieee"
+            }
+        }
+    )
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -48,9 +52,18 @@ class UserCreate(UserBase):
     password: str
 
 class UserInDB(UserBase):
-    id: Optional[PyObjectId] = Field(alias='_id')
+    id: Optional[PyObjectId] = Field(alias='_id', default=None)
     hashed_password: str
     
-    class Config:
-        json_encoders = {ObjectId: str}
-        allow_population_by_field_name = True
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str},
+        json_schema_extra={
+            "example": {
+                "email": "user@example.com",
+                "full_name": "John Doe",
+                "disabled": False,
+                "hashed_password": "hashedpassword123"
+            }
+        }
+    )
