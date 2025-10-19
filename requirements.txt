@@ -11,3 +11,4 @@ docx2pdf>=0.1.8
 httpx>=0.24.1
 pymongo>=4.0.0
 motor>=2.5.1
+email-validator>=1.1.3
